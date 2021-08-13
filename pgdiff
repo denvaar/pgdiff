@@ -1,0 +1,30 @@
+#!/bin/bash
+
+schema="public"
+db="$1"
+id="$2"
+
+tables=$(psql -t -c "select tablename from pg_tables where schemaname not in ('information_schema', 'pg_catalog')" $db | awk 'NF {print($1)}')
+
+basepath="/var/tmp/pgdiff/$id/$db"
+
+for table in $tables
+do
+  if [[ -f "$basepath/$table/a/$table" ]]; then
+    mkdir -p "$basepath/$table/b"
+    psql -c "copy $table to STDOUT WITH CSV" $db > "$basepath/$table/b/$table"
+
+    compare=$(diff -u "$basepath/$table/a/$table" "$basepath/$table/b/$table")
+    if [[ $compare ]]; then
+      tablenamelength=${#table}
+      echo $table
+      printf '\055%.0s' $(seq $tablenamelength)
+      echo ""
+      script -q /dev/null git diff --src-prefix="$table" --dst-prefix="$table" -U0 --color-words=. --no-index -- "$basepath/$table/a/$table" "$basepath/$table/b/$table" < /dev/null | tail -n +6
+      echo ""
+    fi
+  else
+    mkdir -p "$basepath/$table/a"
+    psql -c "copy $table to STDOUT WITH CSV" $db > "$basepath/$table/a/$table"
+  fi
+done
