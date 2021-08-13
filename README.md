@@ -8,6 +8,12 @@ Compare what data changed in your Postgres database between two points in time.
 $ pgdiff <db_name> <key>
 ```
 
+Delete all diffs
+
+```
+$ pgdiff -d
+```
+
 ### Examples
 
 ```
