@@ -14,4 +14,7 @@ $ pgdiff <db_name> <key>
 $ pgdiff pbin_dev xyz
 ```
 
-Time goes by, the rows are inserted/updated, run the command again with the same database name and key:
+Time goes by, rows are inserted/updated. Now run the command again with the same database name and key params to see what data changed:
+
+<img width="500" alt="Screen Shot 2021-08-12 at 11 23 11 PM" src="https://user-images.githubusercontent.com/10538978/129308814-936939ab-81e1-48a0-a583-6ccef3f5691e.png">
+
