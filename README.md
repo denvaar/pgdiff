@@ -4,8 +4,10 @@ Compare what data changed in your Postgres database between two points in time.
 
 ### Usage
 
+Start/end a capture
+
 ```
-$ pgdiff <db_name> <key>
+$ PGDIFF_CONNECTION_STRING=postgresql://user:password@host:port/db_name pgdiff <key>
 ```
 
 Delete all diffs
@@ -17,7 +19,7 @@ $ pgdiff -d
 ### Examples
 
 ```
-$ pgdiff pbin_dev abcd
+$ pgdiff abcd
 ```
 
 Time goes by, rows are inserted/updated. Now run the command again with the same database name and key params to see what data changed:
