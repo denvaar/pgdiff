@@ -67,7 +67,14 @@ do
     # create a directory for the second capture
     mkdir -p "$secondpath"
 
-    cpy=$(psql --no-psqlrc $connstring -t -c "\pset expanded on" -c "\pset pager off" -c "\pset null [null]" -c "select * from $table" $db)
+    primarykey=$(psql --no-psqlrc $connstring -tA -c "SELECT a.attname FROM pg_index i JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) WHERE i.indrelid = '$table'::regclass AND i.indisprimary")
+
+    if [ -z "$primarykey" ]; then
+      echo "[key=$id] [table=$table] Skipping table, no PK found"
+      continue
+    fi
+
+    cpy=$(psql --no-psqlrc $connstring -t -c "\pset expanded on" -c "\pset pager off" -c "\pset null [null]" -c "select * from $table order by $primarykey" $db)
 
     # save the data to temp file
     echo "$cpy" | sed 1,2d > "$secondpath/$table"
@@ -93,8 +100,16 @@ do
     # create a directory for the first capture
     mkdir -p "$firstpath"
 
-    cpy=$(psql --no-psqlrc $connstring -t -c "\pset expanded on" -c "\pset pager off" -c "\pset null [null]" -c "select * from $table" $db)
+    primarykey=$(psql --no-psqlrc $connstring -tA -c "SELECT a.attname FROM pg_index i JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) WHERE i.indrelid = '$table'::regclass AND i.indisprimary")
 
+    if [ -z "$primarykey" ]; then
+      echo "[key=$id] [table=$table] Skipping table, no PK found"
+      continue
+    fi
+
+    cpy=$(psql --no-psqlrc $connstring -t -c "\pset expanded on" -c "\pset pager off" -c "\pset null [null]" -c "select * from $table order by $primarykey" $db)
+
+    # TODO test vs -c "\o /path"
     # save the data to temp file
     echo "$cpy" | sed 1,2d > "$firstpath/$table"
   fi
