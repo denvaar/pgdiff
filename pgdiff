@@ -1,21 +1,60 @@
 #!/bin/bash
 
-id="$1"
+help() {
+  echo ""
+  echo "Compare what data changed in your Postgres database between two points in time."
+  echo ""
+  echo "USAGE: $0 <connection string> [-k key] [-d]"
+  echo ""
+  echo "connection string should be in the format 'postgresql://user:password@host:port/db_name'"
+  echo ""
+  echo "-k is used to specify a key, so as to classify data captures. Eg. The first time that a key is specified, a new capture is initialized. Next time the key is used, $0 will produce a diff of how the data changed from the initial capture."
+  echo ""
+  echo "-d is used to delete all keys, which is wise to do often, since the script works by making copies of entire databases. This can be used in conjunction with -k to clear a specific data capture."
+  echo ""
+}
 
-if [ "$1" = "-d" ]; then
-    rm -rf "/var/tmp/pgdiff"
-    exit 0
-fi
-
-pg_isready -d "$PGDIFF_CONNECTION_STRING" > /dev/null
+pg_isready -d "$1" > /dev/null
 if [[ $? -ne 0 ]]; then
-    echo "PGDIFF_CONNECTION_STRING is not set, or unable to connect to database (eg. 'postgresql://user:password@host:port/db_name')";
-    exit 1
+  echo "Connection string is not set, or unable to connect to database (eg. 'postgresql://user:password@host:port/db_name')";
+  help
+  exit 1
 fi
 
-db=${PGDIFF_CONNECTION_STRING##*/}
+connstring="$1"
+db=${connstring##*/}
 
-tables=$(psql $PGDIFF_CONNECTION_STRING -t -c "select tablename from pg_tables where schemaname not in ('information_schema', 'pg_catalog')" $db | awk 'NF {print($1)}')
+shift
+
+while getopts "k:t:dh" flag; do
+  case "$flag" in
+    k) id=${OPTARG} ;;
+    t) tablefilter=$(printf "%s" "$OPTARG" | sed -E "s/([^,]+)/\'\1\'/g") ;;
+    d) shouldclear=true ;;
+    *)
+      help
+      exit 0
+      ;;
+  esac
+done
+
+if [[ $shouldclear ]]; then
+  if [[ $id ]]; then
+    rm -rf "/var/tmp/pgdiff/$db/$id"
+    echo "[key=$id] Capture cleared"
+  else
+    rm -rf "/var/tmp/pgdiff"
+    echo "All captures cleared"
+  fi
+
+  exit 0
+fi
+
+if [[ $tablefilter ]]; then
+  tables=$(psql --no-psqlrc $connstring -t -c "select tablename from pg_tables where schemaname not in ('information_schema', 'pg_catalog') and tablename in ($tablefilter)" $db | awk 'NF {print($1)}')
+else
+  tables=$(psql --no-psqlrc $connstring -t -c "select tablename from pg_tables where schemaname not in ('information_schema', 'pg_catalog')" $db | awk 'NF {print($1)}')
+fi
 
 for table in $tables
 do
@@ -23,35 +62,30 @@ do
   secondpath="/var/tmp/pgdiff/$db/$id/b"
 
   if [[ -f "$firstpath/$table" ]]; then
-    # "a" exists so command must have been run with the given $id already
+    # key exists so command must have been run with the given $id already
 
     # create a directory for the second capture
     mkdir -p "$secondpath"
 
-    cpy=$(psql $PGDIFF_CONNECTION_STRING -c "copy $table to STDOUT WITH CSV HEADER" $db)
+    cpy=$(psql --no-psqlrc $connstring -t -c "\pset expanded on" -c "\pset pager off" -c "\pset null [null]" -c "select * from $table" $db)
 
     # save the data to temp file
-    echo "$cpy" | sed 1,1d > "$secondpath/$table"
-
-    # extract the header row
-    headers=$(echo "$cpy" | head -n1)
+    echo "$cpy" | sed 1,2d > "$secondpath/$table"
 
     compare=$(diff -u "$firstpath/$table" "$secondpath/$table")
 
     if [[ $compare ]]; then
-      echo $table
-      printf '─%.0s' $(seq ${#table})
-      echo ""
+      # yeah, they different
+      anydiff=true
+      printf "[key=%s] [table=%s]\n\n" $id $table
+
       script -q /dev/null \
-          git --no-pager diff -U0 \
-                   --color-words=. \
-                   --no-index -- "$firstpath/$table" "$secondpath/$table" \
-                   < /dev/null | \
-          tail -n +6 | \
-          awk -v headers=$headers 'NR==1{print headers} {print $0"\n"}' | \
-          sed 's/,,/, ,/g;s/,,/, ,/g' | \
-          awk -vOFS='\t' -vFS="," 'NF > 0 { $1 = $1 } 1'
+        git --no-pager diff \
+            --no-index -- "$firstpath/$table" "$secondpath/$table" \
+            < /dev/null | \
+        tail -n +6
     fi
+
   else
     # a diff has not been captured for the given $id yet
     isnew=true
@@ -59,13 +93,17 @@ do
     # create a directory for the first capture
     mkdir -p "$firstpath"
 
-    cpy=$(psql $PGDIFF_CONNECTION_STRING -c "copy $table to STDOUT WITH CSV HEADER" $db)
+    cpy=$(psql --no-psqlrc $connstring -t -c "\pset expanded on" -c "\pset pager off" -c "\pset null [null]" -c "select * from $table" $db)
 
     # save the data to temp file
-    echo "$cpy" | sed 1,1d > "$firstpath/$table"
+    echo "$cpy" | sed 1,2d > "$firstpath/$table"
   fi
 done
 
 if [[ $isnew ]]; then
-  echo "Data capture started with key '$id'."
+  echo "[key=$id] Data capture started"
+else
+  if ! [[ $anydiff ]]; then
+    echo "[key=$id] No differences since last capture"
+  fi
 fi
