@@ -4,18 +4,19 @@ help() {
   echo ""
   echo "Compare what data changed in your Postgres database between two points in time."
   echo ""
-  echo "USAGE: $0 <connection string> [-k key] [-d]"
+  echo "USAGE: $0 <connection string> [-k key] [-t tables] [-d]"
   echo ""
   echo "connection string should be in the format 'postgresql://user:password@host:port/db_name'"
   echo ""
   echo "-k is used to specify a key, so as to classify data captures. Eg. The first time that a key is specified, a new capture is initialized. Next time the key is used, $0 will produce a diff of how the data changed from the initial capture."
   echo ""
+  echo "-t can be used to specify a comma-separated list of table names (eg. -t \"table1,table2\"). If present, then only the specified tables will be considered. This flag is a no-op when the same key has been used more than once, so you only need to use it the first time with a key."
+  echo ""
   echo "-d is used to delete all keys, which is wise to do often, since the script works by making copies of entire databases. This can be used in conjunction with -k to clear a specific data capture."
   echo ""
 }
 
-pg_isready -d "$1" > /dev/null
-if [[ $? -ne 0 ]]; then
+if ! pg_isready -d "$1" > /dev/null || ! psql "$1" -c "select 1" > /dev/null; then
   echo "Connection string is not set, or unable to connect to database (eg. 'postgresql://user:password@host:port/db_name')";
   help
   exit 1
@@ -38,8 +39,8 @@ while getopts "k:t:dh" flag; do
   esac
 done
 
-if [[ $shouldclear ]]; then
-  if [[ $id ]]; then
+if [ -n "$shouldclear" ]; then
+  if [ -n "$id" ]; then
     rm -rf "/var/tmp/pgdiff/$db/$id"
     echo "[key=$id] Capture cleared"
   else
@@ -50,75 +51,58 @@ if [[ $shouldclear ]]; then
   exit 0
 fi
 
-if [[ $tablefilter ]]; then
-  tables=$(psql --no-psqlrc $connstring -t -c "select tablename from pg_tables where schemaname not in ('information_schema', 'pg_catalog') and tablename in ($tablefilter)" $db | awk 'NF {print($1)}')
+firstpath="/var/tmp/pgdiff/$db/$id/a"
+secondpath="/var/tmp/pgdiff/$db/$id/b"
+
+if [ -d "$firstpath" ]; then
+  tables=$(ls "$firstpath")
 else
-  tables=$(psql --no-psqlrc $connstring -t -c "select tablename from pg_tables where schemaname not in ('information_schema', 'pg_catalog')" $db | awk 'NF {print($1)}')
+  echo "[key=$id] Creating new data capture"
+
+  tablequery="select tablename from pg_tables where schemaname not in ('information_schema', 'pg_catalog')"
+
+  if [ -n "$tablefilter" ]; then
+    tablequery="${tablequery} and tablename in ($tablefilter)"
+  fi
+
+  tables=$(psql --no-psqlrc --quiet "$connstring" -tA  -c "\pset pager off" -c "$tablequery")
 fi
 
 for table in $tables
 do
-  firstpath="/var/tmp/pgdiff/$db/$id/a"
-  secondpath="/var/tmp/pgdiff/$db/$id/b"
+  primarykey=$(psql --no-psqlrc --quiet "$connstring" -tA  -c "\pset pager off" -c "SELECT STRING_AGG(a.attname, ',') FROM pg_index i JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) WHERE i.indrelid = '$table'::regclass AND i.indisprimary")
 
-  if [[ -f "$firstpath/$table" ]]; then
-    # key exists so command must have been run with the given $id already
+  if [ -z "$primarykey" ]; then
+    echo "[key=$id] [table=$table] Skipping table, no PK found"
+    continue
+  fi
 
-    # create a directory for the second capture
+  if [ -f "$firstpath/$table" ]; then
+    # key exists so this script must have been ran with the given key already
     mkdir -p "$secondpath"
+    outputpath="$secondpath/$table"
+    dodiff=true
+  else
+    # a diff has not been captured for the given $id yet
+    mkdir -p "$firstpath"
+    outputpath="$firstpath/$table"
+  fi
 
-    primarykey=$(psql --no-psqlrc $connstring -tA -c "SELECT a.attname FROM pg_index i JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) WHERE i.indrelid = '$table'::regclass AND i.indisprimary")
+  psql --no-psqlrc --quiet "$connstring" -t -c "\pset expanded on" -c "\pset pager off" -c "\pset null [null]" -c "\o $outputpath" -c "select * from $table order by $primarykey" > /dev/null
 
-    if [ -z "$primarykey" ]; then
-      echo "[key=$id] [table=$table] Skipping table, no PK found"
-      continue
-    fi
-
-    cpy=$(psql --no-psqlrc $connstring -t -c "\pset expanded on" -c "\pset pager off" -c "\pset null [null]" -c "select * from $table order by $primarykey" $db)
-
-    # save the data to temp file
-    echo "$cpy" | sed 1,2d > "$secondpath/$table"
-
+  if [ -n "$dodiff" ]; then
     compare=$(diff -u "$firstpath/$table" "$secondpath/$table")
 
-    if [[ $compare ]]; then
+    if [ -n "$compare" ]; then
       # yeah, they different
-      anydiff=true
-      printf "[key=%s] [table=%s]\n\n" $id $table
+      printf "[key=%s] [table=%s] Changes detected\n\n" "$id" "$table"
 
       script -q /dev/null \
         git --no-pager diff \
+            -U10 \
             --no-index -- "$firstpath/$table" "$secondpath/$table" \
             < /dev/null | \
         tail -n +6
     fi
-
-  else
-    # a diff has not been captured for the given $id yet
-    isnew=true
-
-    # create a directory for the first capture
-    mkdir -p "$firstpath"
-
-    primarykey=$(psql --no-psqlrc $connstring -tA -c "SELECT a.attname FROM pg_index i JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) WHERE i.indrelid = '$table'::regclass AND i.indisprimary")
-
-    if [ -z "$primarykey" ]; then
-      echo "[key=$id] [table=$table] Skipping table, no PK found"
-      continue
-    fi
-
-    cpy=$(psql --no-psqlrc $connstring -t -c "\pset expanded on" -c "\pset pager off" -c "\pset null [null]" -c "select * from $table order by $primarykey" $db)
-
-    # TODO test vs -c "\o /path"
-    # save the data to temp file
-    echo "$cpy" | sed 1,2d > "$firstpath/$table"
   fi
 done
-
-if [[ $isnew ]]; then
-  echo "[key=$id] Data capture started"
-else
-  if ! [[ $anydiff ]]; then
-    echo "[key=$id] No differences since last capture"
-  fi
-fi
