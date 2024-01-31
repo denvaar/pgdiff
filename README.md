@@ -2,6 +2,8 @@
 
 Compare what data changed in your Postgres database between two points in time.
 
+It works by just dumping out the tables into files in `/var/tmp/pgdiff`, so if you have a really large database, then you might have a bad time.
+
 ### Usage
 
 Start/end a capture (use the same key a second time)
