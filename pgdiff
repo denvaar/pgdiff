@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 
 help() {
   echo ""
@@ -91,9 +91,7 @@ do
   psql --no-psqlrc --quiet "$connstring" -t -c "\pset expanded on" -c "\pset pager off" -c "\pset null [null]" -c "\o $outputpath" -c "select * from $table order by $primarykey" > /dev/null
 
   if [ -n "$dodiff" ]; then
-    compare=$(diff -u "$firstpath/$table" "$secondpath/$table")
-
-    if [ -n "$compare" ]; then
+    if ! cmp --silent "$firstpath/$table" "$secondpath/$table" ; then
       # yeah, they different
       printf "[key=%s] [table=%s] Changes detected\n\n" "$id" "$table"
 
