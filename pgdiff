@@ -4,7 +4,7 @@ help() {
   echo ""
   echo "Compare what data changed in your Postgres database between two points in time."
   echo ""
-  echo "USAGE: $0 <connection string> [-k key] [-t tables] [-d]"
+  echo "USAGE: $0 <connection string> [-k key] [-t <tables>] [-d] [-c always|never]"
   echo ""
   echo "connection string should be in the format 'postgresql://user:password@host:port/db_name'"
   echo ""
@@ -14,6 +14,29 @@ help() {
   echo ""
   echo "-d is used to delete all keys, which is wise to do often, since the script works by making copies of entire databases. This can be used in conjunction with -k to clear a specific data capture."
   echo ""
+  echo "-c can specify either 'always' or 'never'. If 'always', then color codes are used regardless of whether STDOUT is going to a terminal or a pipe. When 'never' is specified, color will never be used in the output. When -c is not used, the default behavior is to include color codes only if STDOUT is a terminal/tty."
+}
+
+diffcmd() {
+  coloropt="$1"
+  path1="$2"
+  path2="$3"
+
+  set -- --no-pager diff -U10
+
+  case "$coloropt" in
+    auto|always)
+      # STDOUT isatty?
+      if [ -t 1 ] || [ "$coloropt" = "always" ] ; then
+        set -- "$@" --color
+      fi
+      ;;
+    never) set -- "$@" --no-color ;;
+  esac
+
+  set -- "$@" --no-index -- "$path1" "$path2"
+
+  git "$@" | tail -n +6
 }
 
 if ! pg_isready -d "$1" > /dev/null || ! psql "$1" -c "select 1" > /dev/null; then
@@ -24,14 +47,27 @@ fi
 
 connstring="$1"
 db=${connstring##*/}
+coloropt="auto"
 
 shift
 
-while getopts "k:t:dh" flag; do
+while getopts "k:t:dc:h" flag; do
   case "$flag" in
     k) id=${OPTARG} ;;
     t) tablefilter=$(printf "%s" "$OPTARG" | sed -E "s/([^,]+)/\'\1\'/g") ;;
     d) shouldclear=true ;;
+    c)
+      case ${OPTARG} in
+       auto|always|never)
+         coloropt=${OPTARG}
+         ;;
+       *)
+         echo "-c expects one of auto|always|never\n"
+         help
+         exit 1
+         ;;
+      esac
+      ;;
     *)
       help
       exit 0
@@ -56,21 +92,36 @@ secondpath="/var/tmp/pgdiff/$db/$id/b"
 
 if [ -d "$firstpath" ]; then
   tables=$(ls "$firstpath")
+  echo "[key=$id] Comparing data..."
 else
   echo "[key=$id] Creating new data capture"
 
-  tablequery="select tablename from pg_tables where schemaname not in ('information_schema', 'pg_catalog')"
+  tablequery="SELECT tablename FROM pg_tables WHERE schemaname NOT IN ('information_schema', 'pg_catalog')"
 
   if [ -n "$tablefilter" ]; then
-    tablequery="${tablequery} and tablename in ($tablefilter)"
+    tablequery="${tablequery} AND tablename IN ($tablefilter)"
   fi
 
-  tables=$(psql --no-psqlrc --quiet "$connstring" -tA  -c "\pset pager off" -c "$tablequery")
+  tables=$(psql \
+    --no-psqlrc \
+    --quiet \
+    "$connstring" \
+    -c "\pset tuples_only" \
+    -c "\pset format unaligned" \
+    -c "\pset pager off" \
+    -c "$tablequery")
 fi
 
 for table in $tables
 do
-  primarykey=$(psql --no-psqlrc --quiet "$connstring" -tA  -c "\pset pager off" -c "SELECT STRING_AGG(a.attname, ',') FROM pg_index i JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) WHERE i.indrelid = '$table'::regclass AND i.indisprimary")
+  primarykey=$(psql \
+    --no-psqlrc \
+    --quiet \
+    "$connstring" \
+    -c "\pset tuples_only" \
+    -c "\pset format unaligned" \
+    -c "\pset pager off" \
+    -c "SELECT STRING_AGG(a.attname, ',') FROM pg_index i JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) WHERE i.indrelid = '$table'::regclass AND i.indisprimary")
 
   if [ -z "$primarykey" ]; then
     echo "[key=$id] [table=$table] Skipping table, no PK found"
@@ -88,19 +139,28 @@ do
     outputpath="$firstpath/$table"
   fi
 
-  psql --no-psqlrc --quiet "$connstring" -t -c "\pset expanded on" -c "\pset pager off" -c "\pset null [null]" -c "\o $outputpath" -c "select * from $table order by $primarykey" > /dev/null
+  psql --no-psqlrc \
+       --quiet \
+       "$connstring" \
+       -c "\pset tuples_only" \
+       -c "\pset expanded on" \
+       -c "\pset pager off" \
+       -c "\pset null [null]" \
+       -c "\o $outputpath" \
+       -c "SELECT * FROM $table ORDER BY $primarykey" \
+       > /dev/null
 
   if [ -n "$dodiff" ]; then
     if ! cmp --silent "$firstpath/$table" "$secondpath/$table" ; then
       # yeah, they different
+      changes=true
       printf "[key=%s] [table=%s] Changes detected\n\n" "$id" "$table"
 
-      script -q /dev/null \
-        git --no-pager diff \
-            -U10 \
-            --no-index -- "$firstpath/$table" "$secondpath/$table" \
-            < /dev/null | \
-        tail -n +6
+      diffcmd "$coloropt" "$firstpath/$table" "$secondpath/$table"
     fi
   fi
 done
+
+if [ -n "$dodiff" ] && [ -z "$changes" ] ; then
+  printf "[key=%s] No changes detected\n\n" "$id"
+fi
