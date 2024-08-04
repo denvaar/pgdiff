@@ -44,7 +44,8 @@ do
       echo ""
       script -q /dev/null \
           git --no-pager diff -U0 \
-                   --color-words=. \
+                   --color-words \
+                   --word-diff=porcelain \
                    --no-index -- "$firstpath/$table" "$secondpath/$table" \
                    < /dev/null | \
           tail -n +6 | \
