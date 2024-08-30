@@ -1,0 +1,19 @@
+#!/bin/sh
+
+# If the path variable is set per the instructions, this script can be invoked with 
+# bash pgdiffT
+
+read -p "Enter your DB url" -s url;
+echo ""
+read -p "Enter the single table you want to monitor: " -e table
+
+echo ""
+pgdiff $url -t $table -k enter
+
+read -p "Press 'enter' to take the next snapshot"
+
+pgdiff $url -t $table
+
+read -p "press ctrl + c to keep the data, or press 'enter' to delete the data"
+
+pgdiff $url -d

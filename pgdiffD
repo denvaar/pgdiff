@@ -1,0 +1,12 @@
+#!/bin/sh
+
+# If the path variable is set per the instructions, this script can be invoked with 
+# bash pgdiffD
+
+echo "Enter your DB URL"
+read -p "url: " -s url;
+
+echo ''
+
+pgdiff $url -d
+
